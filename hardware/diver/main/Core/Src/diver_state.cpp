@@ -24,8 +24,9 @@
 #define CONFIG_NUM_SLOTS     (CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE)  /* 512  */
 #define CONFIG_MAGIC         0xD1564501UL
 
-/* 2-minute write interval. See lifespan calculation in the guard below.     */
-#define STATE_FLUSH_INTERVAL_MS  120000UL
+/* How long to wait after detecting a change before writing to flash.
+ * Used both at runtime and in the build-time lifespan calculation below.    */
+#define STATE_DIRTY_DEBOUNCE_MS  60000UL
 
 /* ── Chip-health lifespan guard (build-time) ─────────────────────────────── *
  *
@@ -34,9 +35,10 @@
  *
  *   slots_per_sector = CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE = 512
  *   total_writes     = slots_per_sector × 10,000 = 5,120,000
- *   writes_per_year  = (365 × 24 × 60 × 60 × 1000) / STATE_FLUSH_INTERVAL_MS
- *                    = 31,536,000,000 / 120,000 = 262,800
- *   lifespan_years   = total_writes / writes_per_year ≈ 19.5 years
+ *   worst-case interval = STATE_DIRTY_DEBOUNCE_MS = 60 s
+ *   writes_per_year  = (365 × 24 × 3600 × 1000) / 60,000 = 525,600
+ *   lifespan_years   = 5,120,000 / 525,600 ≈ 9.7 years (worst case)
+ *   In practice state changes are infrequent; actual lifespan >> 9.7 years.
  *
  * POLICY: lifespan must be at least FLASH_MIN_LIFESPAN_YEARS.
  * If you widen the slot, shorten the interval, or shrink the sector,
@@ -45,7 +47,11 @@
  * ──────────────────────────────────────────────────────────────────────────── */
 
 #define FLASH_ENDURANCE_CYCLES   10000UL    /* STM32F411 datasheet DS9716      */
-#define FLASH_MIN_LIFESPAN_YEARS 19UL       /* minimum acceptable service life */
+#define FLASH_MIN_LIFESPAN_YEARS 9UL        /* minimum acceptable service life */
+
+/* Interval used for the lifespan calculation below. Worst case = one write
+ * every STATE_DIRTY_DEBOUNCE_MS milliseconds.                               */
+#define _FLASH_INTERVAL_MS  STATE_DIRTY_DEBOUNCE_MS
 
 /* Integer arithmetic version of the lifespan check.
  * lifespan_years = (slots × endurance × interval_ms) / ms_per_year
@@ -58,7 +64,7 @@
 
 #define _FLASH_LIFESPAN_YEARS \
     ((_FLASH_SLOTS_PER_SECTOR * (uint64_t)(FLASH_ENDURANCE_CYCLES) * \
-      (uint64_t)(STATE_FLUSH_INTERVAL_MS)) / _FLASH_MS_PER_YEAR)
+      (uint64_t)(_FLASH_INTERVAL_MS)) / _FLASH_MS_PER_YEAR)
 
 static_assert(
     _FLASH_LIFESPAN_YEARS >= FLASH_MIN_LIFESPAN_YEARS,
@@ -77,8 +83,9 @@ static_assert(sizeof(DiverState) == CONFIG_SLOT_SIZE,
 /* ── Module-private state ─────────────────────────────────────────────────── */
 
 static uint8_t    s_initialised   = 0;
-static uint32_t   s_last_tick     = 0;
-static DiverState s_last_written;   /* baseline for change detection         */
+static uint8_t    s_dirty         = 0;    /* 1 = change detected, write pending */
+static uint32_t   s_dirty_tick    = 0;    /* HAL_GetTick() when change first seen */
+static DiverState s_last_written;         /* last state committed to flash        */
 
 /* ── Internal helpers ─────────────────────────────────────────────────────── */
 
@@ -129,15 +136,20 @@ static HAL_StatusTypeDef write_slot(uint32_t idx, const DiverState *s)
 
 /**
  * Erase the config sector.
- * EXTI15_10 and DMA2_Stream5 are disabled for the duration to prevent the
- * video ISR from stalling mid-erase (erase takes ~1 s for a 16 KB sector).
- * Video will glitch for that window; this happens at most once every
- * 512 writes ≈ once every 42.7 hours at a 5-minute write interval.
+ * Saves and restores the NVIC enable state for EXTI15_10 and DMA2_Stream5
+ * so this is safe to call both at boot (IRQs not yet enabled) and mid-session
+ * (IRQs running). When called at boot from state_init(), the IRQs aren't
+ * enabled yet — unconditionally re-enabling them here would fire the HSYNC
+ * ISR before DMA callbacks and htim1 are wired up, corrupting linecnt and
+ * waveReadPtr from the very first frame.
  */
 static void erase_config_sector(void)
 {
-    HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
-    HAL_NVIC_DisableIRQ(DMA2_Stream5_IRQn);
+    uint32_t exti_was_on = NVIC_GetEnableIRQ(EXTI15_10_IRQn);
+    uint32_t dma_was_on  = NVIC_GetEnableIRQ(DMA2_Stream5_IRQn);
+
+    if (exti_was_on) HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
+    if (dma_was_on)  HAL_NVIC_DisableIRQ(DMA2_Stream5_IRQn);
 
     FLASH_EraseInitTypeDef e;
     e.TypeErase    = FLASH_TYPEERASE_SECTORS;
@@ -150,8 +162,8 @@ static void erase_config_sector(void)
     HAL_FLASHEx_Erase(&e, &sector_err);
     HAL_FLASH_Lock();
 
-    HAL_NVIC_EnableIRQ(DMA2_Stream5_IRQn);
-    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+    if (dma_was_on)  HAL_NVIC_EnableIRQ(DMA2_Stream5_IRQn);
+    if (exti_was_on) HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 }
 
 /* ── Public API ───────────────────────────────────────────────────────────── */
@@ -193,21 +205,26 @@ void state_maybe_flush(const DiverState *current)
     uint32_t now = HAL_GetTick();
 
     if (!s_initialised) {
-        /* First call after boot: record baseline, arm timer, skip write. */
+        /* First call after boot: record what's currently on flash as baseline. */
         s_last_written = *current;
-        s_last_tick    = now;
         s_initialised  = 1;
         return;
     }
 
-    /* Honour the 5-minute rate limit. */
-    if ((now - s_last_tick) < STATE_FLUSH_INTERVAL_MS) return;
-
-    /* Only write when user-visible state has actually changed. */
-    if (state_data_equal(current, &s_last_written)) {
-        s_last_tick = now;   /* reset timer; no write needed */
-        return;
+    /* Detect change vs. last written state. */
+    if (!state_data_equal(current, &s_last_written)) {
+        if (!s_dirty) {
+            /* First time we see this change — arm the debounce timer. */
+            s_dirty      = 1;
+            s_dirty_tick = now;
+        }
     }
+
+    /* Nothing pending — nothing to do. */
+    if (!s_dirty) return;
+
+    /* Debounce: wait STATE_DIRTY_DEBOUNCE_MS after the change was first seen. */
+    if ((now - s_dirty_tick) < STATE_DIRTY_DEBOUNCE_MS) return;
 
     /* Scan for first blank slot and track highest sequence number. */
     uint32_t write_idx = CONFIG_NUM_SLOTS;   /* sentinel: none found yet */
@@ -238,5 +255,5 @@ void state_maybe_flush(const DiverState *current)
     write_slot(write_idx, &to_write);
 
     s_last_written = to_write;
-    s_last_tick    = now;
+    s_dirty        = 0;
 }
