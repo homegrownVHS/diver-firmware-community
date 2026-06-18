@@ -9,6 +9,7 @@
 #include "tim.h"
 //#include "usb_device.h"
 #include "gpio.h"
+#include "diver_state.h"
 #include <math.h>
 #include <string>
 #include <stdio.h>
@@ -540,6 +541,45 @@ void GenerateLUT(uint8_t waveshape);
 extern DMA_HandleTypeDef hdma_tim1_uev;
 uint32_t ADCValue;
 
+/* ── State persistence helpers ──────────────────────────────────────────── */
+
+/** Pack all persistable state into a DiverState for flash storage. */
+static void state_pack(DiverState *s)
+{
+	__builtin_memset(s, 0, sizeof(DiverState));   /* zero pad and magic/seq fields */
+	s->selected_bank          = selected_bank;
+	s->toggle_mirrorx         = buttons[kButtonMirrorX].togglestate;
+	s->toggle_mirrory         = buttons[kButtonMirrorY].togglestate;
+	s->toggle_invert          = buttons[kButtonInvert].togglestate;
+	s->toggle_scrollx         = buttons[kButtonScrollX].togglestate;
+	s->toggle_scrolly         = buttons[kButtonScrollY].togglestate;
+	s->trigger_enable_freeze  = trigger_enable_freeze;
+	s->trigger_enable_clear   = trigger_enable_clear;
+	s->trigger_enable_mirrorx = trigger_enable_mirrorx;
+	s->trigger_enable_mirrory = trigger_enable_mirrory;
+	s->trigger_enable_scrollx = trigger_enable_scrollx;
+	s->trigger_enable_scrolly = trigger_enable_scrolly;
+	s->trigger_enable_invert  = trigger_enable_invert;
+}
+
+/** Restore persistable state from a DiverState loaded from flash. */
+static void state_unpack(const DiverState *s)
+{
+	selected_bank                        = s->selected_bank;
+	buttons[kButtonMirrorX].togglestate  = s->toggle_mirrorx;
+	buttons[kButtonMirrorY].togglestate  = s->toggle_mirrory;
+	buttons[kButtonInvert].togglestate   = s->toggle_invert;
+	buttons[kButtonScrollX].togglestate  = s->toggle_scrollx;
+	buttons[kButtonScrollY].togglestate  = s->toggle_scrolly;
+	trigger_enable_freeze                = s->trigger_enable_freeze;
+	trigger_enable_clear                 = s->trigger_enable_clear;
+	trigger_enable_mirrorx               = s->trigger_enable_mirrorx;
+	trigger_enable_mirrory               = s->trigger_enable_mirrory;
+	trigger_enable_scrollx               = s->trigger_enable_scrollx;
+	trigger_enable_scrolly               = s->trigger_enable_scrolly;
+	trigger_enable_invert                = s->trigger_enable_invert;
+}
+
 int main(void)
 {
 	
@@ -600,7 +640,17 @@ int main(void)
 	__HAL_TIM_ENABLE_DMA(&htim1, TIM_DMA_UPDATE);
 	__HAL_TIM_ENABLE(&htim1);
 	HAL_ADC_Start(&hadc1);
-	
+
+	/* Restore last saved state from flash (if any).  Must run after all HAL
+	 * init and before the main loop so the first rendered frame is correct. */
+	{
+		DiverState saved;
+		if (state_load(&saved)) {
+			state_unpack(&saved);
+			GenerateLUT(selected_bank);
+		}
+	}
+
 	while (1)
 	{
 			
@@ -1030,7 +1080,12 @@ int main(void)
 				}
 			}
 
-			waveRenderComplete = 1;	
+			waveRenderComplete = 1;
+			{
+				DiverState cur;
+				state_pack(&cur);
+				state_maybe_flush(&cur);
+			}
 			Display_Refresh();
 		}		
 	}	

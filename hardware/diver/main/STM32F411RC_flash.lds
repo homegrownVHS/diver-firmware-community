@@ -7,7 +7,11 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-	FLASH (RX) : ORIGIN = 0x08000000, LENGTH = 256K
+	/* Sectors 0-2 only (3 × 16 KB = 48 KB, ends at 0x0800BFFF).
+	 * Sector 3 (0x0800C000, 16 KB) is reserved for wear-leveled config
+	 * storage in diver_state.cpp and must NEVER appear in this map.
+	 * Sectors 4-5 (64+128 KB) are available; widen LENGTH here if needed. */
+	FLASH (RX) : ORIGIN = 0x08000000, LENGTH = 48K
 	EEPROM (RWX) : ORIGIN = 0x08040000, LENGTH = 256K
 	SRAM (RWX) : ORIGIN = 0x20000000, LENGTH = 128K
 }
