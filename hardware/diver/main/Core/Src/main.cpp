@@ -949,10 +949,10 @@ int main(void)
 				}
 				switch (selected_bank)
 				{
-				case 6:		
-				case 7:	 sample = samples_wave[sampleReadPtr][sample_index]; break;	
+				case 6:
+				case 7:	 sample = samples_wave[sampleReadPtr][sample_index]; break;
 				default: sample = sampleplusramp&1023; break;
-				}				
+				}
 				hwave[waveWritePtr][i] = sample;
 				hwave[waveWritePtr][hres+i] = sample;
 			}

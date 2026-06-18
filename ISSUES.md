@@ -119,7 +119,7 @@ or a simple wear-leveled write scheme).
 **Code location:** `main.cpp` — state variables: `selected_bank`, `buttons[i].togglestate`,
 `trigger_enable_*`, `frozen`, etc.
 
-**Status:** IMPLEMENTED — commits `4bbe4e9` + `d670de2`. Wear-leveled write to Sector 3 (0x0800C000, 16 KB). 512 slots × 32 bytes, 2-min write interval, ~19.5-year lifespan enforced by build-time static_assert. State restores on boot. NOTE: state is only committed to flash after a change AND 2 minutes of uptime — power cycling within that window will lose the most recent change.
+**Status:** IMPLEMENTED — commits `4bbe4e9` + `d670de2` + state moved to end of flash. Wear-leveled write to Sector 5 (0x08020000, 128 KB) — the last sector of physical flash on STM32F411RC. 4096 slots × 32 bytes, 5-min write interval, ~389-year worst-case lifespan enforced by build-time static_assert (`FLASH_MIN_LIFESPAN_YEARS = 100`). State restores on boot. NOTE: state is only committed to flash after a change AND 5 minutes of uptime — power cycling within that window will lose the most recent change.
 
 ---
 
