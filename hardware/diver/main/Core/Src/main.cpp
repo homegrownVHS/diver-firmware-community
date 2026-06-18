@@ -451,53 +451,58 @@ uint32_t ledcnt = 0;
 
 uint8_t i2cData[2];
 
-//Video timing
-uint8_t hsync_event;
-uint8_t trigger_rising;
-uint8_t trigger_falling;
-uint8_t trigger_state;
-uint8_t evenfield_event;
-uint8_t oddfield_event;
-uint8_t field;
-uint8_t vsync;
-uint16_t linecnt;
-uint16_t lines_per_oddfield;
-uint16_t lines_per_evenfield;
-uint16_t lines_per_frame;
-uint32_t dropped_frames;
+// Video timing, buffers, and pointers are DEFINED in stm32f4xx_it.c (ISR owner).
+// Declare them extern here so main.cpp can read/write them without duplicate definitions.
+// Must match volatile qualification from stm32f4xx_it.c definitions.
+extern volatile uint8_t hsync_event;
+extern volatile uint8_t trigger_rising;
+extern volatile uint8_t trigger_falling;
+extern volatile uint8_t trigger_state;
+extern volatile uint8_t evenfield_event;
+extern volatile uint8_t oddfield_event;
+extern volatile uint8_t field;
+extern volatile uint8_t vsync;
+extern volatile uint16_t linecnt;
+extern volatile uint16_t lines_per_oddfield;
+extern volatile uint16_t lines_per_evenfield;
+extern volatile uint16_t lines_per_frame;
+extern volatile uint32_t dropped_frames;
 
 //Memory buffers
 uint16_t lut[MAX_BUFFER_SIZE];
 
-uint16_t samples_wave[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t samples_hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t hwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t vwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
+extern volatile uint16_t samples_wave[NUM_BUFFERS][MAX_BUFFER_SIZE];
+extern volatile uint16_t samples_hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
+extern volatile uint16_t hwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
+extern volatile uint16_t vwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
+extern volatile uint16_t hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
 
 //Memory pointers and enables
-uint8_t waveReadPtr;
-uint8_t waveWritePtr;
-uint8_t sampleReadPtr;
-uint8_t sampleWritePtr;
-uint8_t waveRenderComplete;
-uint8_t captureEnable;
+extern volatile uint8_t waveReadPtr;
+extern volatile uint8_t waveWritePtr;
+extern volatile uint8_t sampleReadPtr;
+extern volatile uint8_t sampleWritePtr;
+extern volatile uint8_t waveRenderComplete;
+extern volatile uint8_t captureEnable;
 uint16_t ledupdatecnt;
 
 //Application variables
-uint16_t hphase_slider;
-uint16_t vphase_slider;
-uint16_t vphase_cv;
+// hphase_slider, vphase_slider, vphase_cv, hres, vres, interlace_mode, frozen
+// are DEFINED in stm32f4xx_it.c (ISR owner) — extern here.
+extern volatile uint16_t hphase_slider;
+extern volatile uint16_t vphase_slider;
+extern volatile uint16_t vphase_cv;
+extern volatile uint16_t hres;
+extern volatile uint16_t vres;
+extern volatile uint8_t interlace_mode;
+extern volatile uint8_t frozen;
+// hphase, vphase, hphasecnt, vphasecnt, deinterlace_mode are only in main.cpp:
 uint16_t hphase;
 uint16_t vphase;
 uint16_t hphasecnt;
 uint16_t vphasecnt;
-uint16_t hres;
-uint16_t vres;
 uint8_t hphase_interlace_mode;      // 0 = video sampling, 1 = audio sampling
-uint8_t interlace_mode;     // 0 = video sampling, 1 = audio sampling
 uint8_t deinterlace_mode;      // 0 = video sampling, 1 = audio sampling
-uint8_t frozen;
 uint8_t selected_bank;    // 0 to 19
 uint8_t bank_display_mode;
 uint8_t bank_display_counter;
@@ -515,7 +520,8 @@ uint8_t state_scrollx;
 uint8_t state_scrolly;
 uint8_t state_invert;
 uint8_t reg[24] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-uint32_t tim1period;
+// tim1period is defined in tim.c — extern here
+extern uint32_t tim1period;
 void SystemClock_Config(void);
 static void MX_NVIC_Init(void);
 void data_transmitted_handler(DMA_HandleTypeDef *hdma);
@@ -530,8 +536,7 @@ void ConfigureADC(void);
 void ConfigureADCWaveSample(void);
 void ConfigureADCPhaseSample(void);
 void GenerateLUT(uint8_t waveshape);
-ADC_HandleTypeDef hadc1;
-TIM_HandleTypeDef htim1;
+// hadc1 and htim1 are defined in adc.c / tim.c; extern declarations come from adc.h / tim.h
 extern DMA_HandleTypeDef hdma_tim1_uev;
 uint32_t ADCValue;
 
@@ -949,6 +954,11 @@ int main(void)
 				vwave[waveWritePtr][vres + vres - i] = sample;
 				hphase_cv[waveWritePtr][vres + vres - i] = sample_hphase;
 			}
+			// Fix: index [vres] is never touched by the loop above (forward writes
+			// [0..vres-1], mirror writes [vres+1..2*vres]). Seed it from [0] so the
+			// DMA never reads a stale value at the forward/mirror boundary.
+			vwave[waveWritePtr][vres]     = vwave[waveWritePtr][0];
+			hphase_cv[waveWritePtr][vres] = hphase_cv[waveWritePtr][0];
 
 
 			switch (selected_bank)
@@ -1084,8 +1094,31 @@ void data_transmitted_handler(DMA_HandleTypeDef *hdma)
 		}
 	}*/
 
-	hwave[waveReadPtr][hres + HBLANK] = vwave[waveReadPtr][linecnt] | 0b10000000000;
-	HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE], (uint32_t)&hwave[waveReadPtr][hphase_cv[waveReadPtr][linecnt]%hres], (uint32_t)&GPIOC->ODR, hres + HBLANK + 3);
+	/* SEAM FIX:
+	 * The V-channel sentinel (bit 10 set = DAC channel B select) was always
+	 * written at fixed index hwave[hres=524]. But the DMA starts at
+	 * offset = hphase_cv % hres (~131), so the sentinel appeared at DMA
+	 * position 524-131 = 393 = 3/4 across the screen — THE SEAM.
+	 *
+	 * Fix: write sentinel at (dma_off + hres) so it always lands at DMA
+	 * position hres = exactly after the last active video pixel (back porch).
+	 * Restore the previous sentinel to its correct duplicate value first so
+	 * stale sentinel data never appears in the next line's active region.
+	 */
+	static uint32_t prev_sentinel_idx = hres;
+	static uint8_t  prev_sentinel_buf = 0;
+	if (prev_sentinel_buf == waveReadPtr &&
+	    prev_sentinel_idx >= (uint32_t)hres &&
+	    prev_sentinel_idx < (uint32_t)(hres * 2))
+	{
+		hwave[waveReadPtr][prev_sentinel_idx] = hwave[waveReadPtr][prev_sentinel_idx - hres];
+	}
+	uint32_t dma_off     = hphase_cv[waveReadPtr][linecnt] % hres;
+	uint32_t sentinel_idx = dma_off + hres + HBLANK;
+	hwave[waveReadPtr][sentinel_idx] = vwave[waveReadPtr][linecnt] | 0b10000000000;
+	prev_sentinel_idx = sentinel_idx;
+	prev_sentinel_buf = waveReadPtr;
+	HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE], (uint32_t)&hwave[waveReadPtr][dma_off], (uint32_t)&GPIOC->ODR, hres + HBLANK + 3);
 
 }
 

@@ -37,51 +37,53 @@
 
 /* USER CODE BEGIN 0 */
 #include "main.h"
+#include "adc.h"
+#include "tim.h"
 
 uint8_t fieldflag;
-ADC_HandleTypeDef hadc1;
-TIM_HandleTypeDef htim1;
+// hadc1 defined in adc.c, htim1 defined in tim.c — included via adc.h / tim.h
 ADC_ChannelConfTypeDef sConfig;
+// volatile: written in EXTI ISR, read in main loop — must not be cached in registers
 //Video timing
-uint8_t hsync_event;
-uint8_t trigger_rising;
-uint8_t trigger_falling;
-uint8_t trigger_state;
+volatile uint8_t hsync_event;
+volatile uint8_t trigger_rising;
+volatile uint8_t trigger_falling;
+volatile uint8_t trigger_state;
 
-uint8_t evenfield_event;
-uint8_t oddfield_event;
-uint8_t field;
-uint8_t vsync;
-uint16_t linecnt;
-uint16_t lines_per_oddfield;
-uint16_t lines_per_evenfield;
-uint16_t lines_per_frame;
-uint32_t dropped_frames;
-uint32_t prelinecnt;
+volatile uint8_t evenfield_event;
+volatile uint8_t oddfield_event;
+volatile uint8_t field;
+volatile uint8_t vsync;
+volatile uint16_t linecnt;
+volatile uint16_t lines_per_oddfield;
+volatile uint16_t lines_per_evenfield;
+volatile uint16_t lines_per_frame;
+volatile uint32_t dropped_frames;
+volatile uint32_t prelinecnt;
 
-//Memory buffers
-uint16_t samples_wave[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t samples_hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t hwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t vwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
-uint16_t hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
+//Memory buffers — volatile because written in ISR context, read in main loop
+volatile uint16_t samples_wave[NUM_BUFFERS][MAX_BUFFER_SIZE];
+volatile uint16_t samples_hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
+volatile uint16_t hwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
+volatile uint16_t vwave[NUM_BUFFERS][MAX_BUFFER_SIZE];
+volatile uint16_t hphase_cv[NUM_BUFFERS][MAX_BUFFER_SIZE];
 
 //Memory pointers and enables
-uint8_t waveReadPtr;
-uint8_t waveWritePtr;
-uint8_t sampleReadPtr;
-uint8_t sampleWritePtr;
-uint8_t waveRenderComplete;
-uint8_t captureEnable;
+volatile uint8_t waveReadPtr;
+volatile uint8_t waveWritePtr;
+volatile uint8_t sampleReadPtr;
+volatile uint8_t sampleWritePtr;
+volatile uint8_t waveRenderComplete;
+volatile uint8_t captureEnable;
 
 //Application variables
-uint16_t hres;
-uint16_t vres;
-uint16_t hphase_slider;
-uint16_t vphase_slider;
-uint16_t vphase_cv;
-uint8_t interlace_mode;   // 0 = video sampling, 1 = audio sampling
-uint8_t frozen;
+volatile uint16_t hres;
+volatile uint16_t vres;
+volatile uint16_t hphase_slider;
+volatile uint16_t vphase_slider;
+volatile uint16_t vphase_cv;
+volatile uint8_t interlace_mode;   // 0 = video sampling, 1 = audio sampling
+volatile uint8_t frozen;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -243,9 +245,21 @@ void SysTick_Handler(void)
 */
 void EXTI15_10_IRQHandler(void)
 {
-	
+	/* Sync-blip guard: if the previous line's DMA transfer is still clocking out
+	 * (TIM1 still enabled), stop the timer before restarting it.  The in-flight
+	 * DMA transfer in NORMAL mode runs to completion autonomously — no further
+	 * UEV pulses are needed — so data_transmitted_handler() will still fire and
+	 * restart DMA for the next line normally.
+	 * NOTE: do NOT call HAL_DMA_Abort() here — it calls HAL_GetTick() (SysTick,
+	 * priority 15) which can never preempt us at priority 0 → deadlock.
+	 * NOTE: do NOT clear DMA_SxCR_EN — suppresses TCIF, breaks pipeline.
+	 */
+	if (TIM1->CR1 & TIM_CR1_CEN)
+	{
+		TIM1->CR1 = 0;
+		dropped_frames++;
+	}
 	__HAL_TIM_ENABLE(&htim1);
-	//if (linecnt > 6){__HAL_TIM_ENABLE(&htim1); }
 	hsync_event = 1;
 	linecnt += 1;	
 	prelinecnt += 1;
@@ -314,17 +328,18 @@ void EXTI15_10_IRQHandler(void)
 		{
 			sample = 1023;
 		}
+		/* 8-tap leaky IIR: new = (7*prev + new) >> 3
+		 * Settles in ~5 lines; much better high-frequency noise rejection
+		 * than the old 4-tap average while keeping latency low. */
 		if (linecnt == 0)
 		{
-			samples_wave[sampleWritePtr][linecnt - VBLANK] = sample;
-		}
-		else if (linecnt < 3)
-		{
-			samples_wave[sampleWritePtr][linecnt - VBLANK] = (sample + samples_wave[sampleWritePtr][linecnt - VBLANK - 1]) >> 1;
+			samples_wave[sampleWritePtr][0] = sample;
 		}
 		else
 		{
-			samples_wave[sampleWritePtr][linecnt - VBLANK] = (sample + samples_wave[sampleWritePtr][linecnt - VBLANK - 1] + samples_wave[sampleWritePtr][linecnt - VBLANK - 2] + samples_wave[sampleWritePtr][linecnt - VBLANK - 3]) >> 2;
+			samples_wave[sampleWritePtr][linecnt] =
+				(uint16_t)(((uint32_t)sample +
+				            (uint32_t)samples_wave[sampleWritePtr][linecnt - 1] * 7u) >> 3);
 		}
 		
 		//samples[sampleWritePtr][linecnt - VBLANK] = (4095 - HAL_ADC_GetValue(&hadc1)) >> 2;
@@ -388,19 +403,16 @@ void EXTI15_10_IRQHandler(void)
 		//}
 		
 
+		/* Same 8-tap leaky IIR for H-phase CV — reduces jitter on shape edges */
 		if (linecnt == 0)
 		{
-			//samples_hphase[sampleWritePtr][linecnt - VBLANK] = (sample + samples_hphase[(4 + (sampleWritePtr - 1)) % 4][vres - 1]) >> 1;
-			//samples_hphase[sampleWritePtr][linecnt - VBLANK] = (sample + samples_hphase[(4 + sampleWritePtr - 1) % 4][vres - 1] + samples_hphase[(4 + sampleWritePtr - 1) % 4][vres - 2] + samples_hphase[(4 + sampleWritePtr - 1) % 4][vres - 3]) >> 2;
-			samples_hphase_cv[sampleWritePtr][linecnt - VBLANK] = sample;
-		}
-		else if (linecnt < 3)
-		{
-			samples_hphase_cv[sampleWritePtr][linecnt - VBLANK] = (sample + samples_hphase_cv[sampleWritePtr][linecnt - VBLANK - 1]) >> 1;
+			samples_hphase_cv[sampleWritePtr][0] = sample;
 		}
 		else
 		{
-			samples_hphase_cv[sampleWritePtr][linecnt - VBLANK] = (sample + samples_hphase_cv[sampleWritePtr][linecnt - VBLANK - 1] + samples_hphase_cv[sampleWritePtr][linecnt - VBLANK - 2] + samples_hphase_cv[sampleWritePtr][linecnt - VBLANK - 3]) >> 2;
+			samples_hphase_cv[sampleWritePtr][linecnt] =
+				(uint16_t)(((uint32_t)sample +
+				            (uint32_t)samples_hphase_cv[sampleWritePtr][linecnt - 1] * 7u) >> 3);
 		}
 
 		//samples_hphase[sampleWritePtr][linecnt - VBLANK] = (4095 - HAL_ADC_GetValue(&hadc1)) >> 2;
