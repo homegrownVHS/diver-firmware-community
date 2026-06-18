@@ -98,8 +98,8 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pins : PCPin PCPin PCPin PCPin 
                            PCPin PCPin PCPin PCPin 
                            PCPin PCPin PCPin */
-  GPIO_InitStruct.Pin = DAC_D0_Pin|DAC_D1_Pin|DAC_D2_Pin|DAC_D3_Pin 
-                          |DAC_D4_Pin|DAC_D5_Pin|DAC_D6_Pin|DAC_D7_Pin 
+  GPIO_InitStruct.Pin = DAC_D0_Pin|DAC_D1_Pin|DAC_D2_Pin|DAC_D3_Pin
+                          |DAC_D4_Pin|DAC_D5_Pin|DAC_D6_Pin|DAC_D7_Pin
                           |DAC_D8_Pin|DAC_D9_Pin|DAC_AB_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;

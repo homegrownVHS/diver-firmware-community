@@ -7,12 +7,18 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-	/* Sectors 0-2 only (3 × 16 KB = 48 KB, ends at 0x0800BFFF).
-	 * Sector 3 (0x0800C000, 16 KB) is reserved for wear-leveled config
-	 * storage in diver_state.cpp and must NEVER appear in this map.
-	 * Sectors 4-5 (64+128 KB) are available; widen LENGTH here if needed. */
-	FLASH (RX) : ORIGIN = 0x08000000, LENGTH = 48K
-	EEPROM (RWX) : ORIGIN = 0x08040000, LENGTH = 256K
+	/* STM32F411RC flash sector map (256 KB total):
+	 *   Sectors 0-3: 16 KB each at 0x08000000..0x0800FFFF (64 KB)
+	 *   Sector 4   : 64 KB    at 0x08010000..0x0801FFFF
+	 *   Sector 5   : 128 KB   at 0x08020000..0x0803FFFF  ← reserved for state
+	 *
+	 * Code occupies sectors 0-4 (192 KB).  Sector 5 (the last sector) is
+	 * reserved for wear-leveled config storage in diver_state.cpp and must
+	 * NEVER appear in this MEMORY map.  Placing state in the LAST sector
+	 * gives the largest possible wear-leveling pool (4096 slots → ~390 yr
+	 * worst-case lifespan) and reserves the longest possible code region
+	 * for future growth. */
+	FLASH (RX) : ORIGIN = 0x08000000, LENGTH = 192K
 	SRAM (RWX) : ORIGIN = 0x20000000, LENGTH = 128K
 }
 

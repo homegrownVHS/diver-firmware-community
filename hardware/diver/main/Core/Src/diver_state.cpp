@@ -3,9 +3,12 @@
  *
  * See diver_state.h for the full lifespan analysis and design notes.
  *
- * Flash region used: STM32F411RC Sector 3 (0x0800C000, 16 KB).
- * This sector is intentionally NOT in the linker FLASH region (which is
- * capped at 48 KB / 0x0800BFFF) so the toolchain can never place code here.
+ * Flash region used: STM32F411RC Sector 5 (0x08020000, 128 KB) — the LAST
+ * sector of physical flash on this part.  Placing state in the final sector
+ * maximises the wear-leveling pool (4096 slots) and leaves sectors 0-4
+ * (192 KB) contiguous for code.  The sector is intentionally NOT in the
+ * linker FLASH region (which is capped at 192 KB / 0x0801FFFF) so the
+ * toolchain can never place code here.
  */
 
 #include "diver_state.h"
@@ -16,38 +19,42 @@
 
 /* ── Config flash layout ──────────────────────────────────────────────────── */
 
-#define CONFIG_FLASH_BASE    0x0800C000UL    /* Sector 3 start               */
-#define CONFIG_FLASH_SECTOR  FLASH_SECTOR_3
+#define CONFIG_FLASH_BASE    0x08020000UL    /* Sector 5 start (end of flash) */
+#define CONFIG_FLASH_SECTOR  FLASH_SECTOR_5
 #define CONFIG_FLASH_VRANGE  FLASH_VOLTAGE_RANGE_3   /* VDD 2.7–3.6 V        */
 #define CONFIG_SLOT_SIZE     32U
-#define CONFIG_SECTOR_SIZE   (16U * 1024U)
-#define CONFIG_NUM_SLOTS     (CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE)  /* 512  */
+#define CONFIG_SECTOR_SIZE   (128U * 1024U)
+#define CONFIG_NUM_SLOTS     (CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE)  /* 4096 */
 #define CONFIG_MAGIC         0xD1564501UL
 
 /* How long to wait after detecting a change before writing to flash.
  * Used both at runtime and in the build-time lifespan calculation below.    */
-#define STATE_DIRTY_DEBOUNCE_MS  60000UL
+#define STATE_DIRTY_DEBOUNCE_MS  300000UL   /* 5 minutes                     */
 
 /* ── Chip-health lifespan guard (build-time) ─────────────────────────────── *
  *
  * STM32F411RC internal flash endurance: 10,000 guaranteed erase cycles.
- * Sector 3 = 16 KB.  Slot = CONFIG_SLOT_SIZE bytes.
+ * Sector 5 = 128 KB.  Slot = CONFIG_SLOT_SIZE bytes.
  *
- *   slots_per_sector = CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE = 512
- *   total_writes     = slots_per_sector × 10,000 = 5,120,000
- *   worst-case interval = STATE_DIRTY_DEBOUNCE_MS = 60 s
- *   writes_per_year  = (365 × 24 × 3600 × 1000) / 60,000 = 525,600
- *   lifespan_years   = 5,120,000 / 525,600 ≈ 9.7 years (worst case)
- *   In practice state changes are infrequent; actual lifespan >> 9.7 years.
+ *   slots_per_sector = CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE = 4096
+ *   total_writes     = slots_per_sector × 10,000 = 40,960,000
+ *   worst-case interval = STATE_DIRTY_DEBOUNCE_MS = 300 s (5 min)
+ *   writes_per_year  = (365 × 24 × 3600 × 1000) / 300,000 = 105,120
+ *   lifespan_years   = 40,960,000 / 105,120 ≈ 390 years (worst case)
+ *   In practice state changes are infrequent; actual lifespan ≫ 390 years.
+ *
+ * Sector exhaustion at the worst-case rate occurs every
+ *   4096 × 5 min = 20,480 min ≈ 14 days of continuous nonstop change.
+ * The next boot then erases the sector (one-time ~3 s pre-IRQ pause).
  *
  * POLICY: lifespan must be at least FLASH_MIN_LIFESPAN_YEARS.
  * If you widen the slot, shorten the interval, or shrink the sector,
  * the static_assert below will catch it at compile time.
- * To fix: increase STATE_FLUSH_INTERVAL_MS or decrease CONFIG_SLOT_SIZE.
+ * To fix: increase STATE_DIRTY_DEBOUNCE_MS or decrease CONFIG_SLOT_SIZE.
  * ──────────────────────────────────────────────────────────────────────────── */
 
 #define FLASH_ENDURANCE_CYCLES   10000UL    /* STM32F411 datasheet DS9716      */
-#define FLASH_MIN_LIFESPAN_YEARS 9UL        /* minimum acceptable service life */
+#define FLASH_MIN_LIFESPAN_YEARS 100UL      /* minimum acceptable service life */
 
 /* Interval used for the lifespan calculation below. Worst case = one write
  * every STATE_DIRTY_DEBOUNCE_MS milliseconds.                               */

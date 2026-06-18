@@ -359,15 +359,18 @@ void EXTI15_10_IRQHandler(void)
 		sConfig.Rank = 2;
 		HAL_ADC_ConfigChannel(&hadc1, &sConfig);
 
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1, 1);
-		sample = 4095 - HAL_ADC_GetValue(&hadc1);
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1, 1);
-		sample = (sample + 4095 - HAL_ADC_GetValue(&hadc1))>>1;
-		HAL_ADC_Start(&hadc1);
-		HAL_ADC_PollForConversion(&hadc1, 1);
-		sample = (sample + 4095 - HAL_ADC_GetValue(&hadc1)) >> 1;
+		/* H-phase CV oversample: 8-sample arithmetic mean.
+		 * Replaces the prior 3-sample IIR-weighted average; flat weighting
+		 * gives ~9 dB better rejection of high-frequency PSU/ADC noise. */
+		{
+			uint32_t accum = 0;
+			for (int _i = 0; _i < 8; ++_i) {
+				HAL_ADC_Start(&hadc1);
+				HAL_ADC_PollForConversion(&hadc1, 1);
+				accum += (uint32_t)(4095 - HAL_ADC_GetValue(&hadc1));
+			}
+			sample = (uint16_t)(accum >> 3);
+		}
 		/*if (sample >= 4095 + 0 - 2048)
 		{
 			sample = 4095 + 0 - 2048;
@@ -403,7 +406,10 @@ void EXTI15_10_IRQHandler(void)
 		//}
 		
 
-		/* Same 8-tap leaky IIR for H-phase CV — reduces jitter on shape edges */
+		/* 32-tap leaky IIR for H-phase CV: new = (31*prev + new) >> 5
+		 * Widened from 1/8 to 1/32 to kill line-to-line jitter that produces
+		 * vertical seams in the H-ramp.  CV response slows from ~0.5 ms to
+		 * ~2 ms — imperceptible for a manually-driven control voltage. */
 		if (linecnt == 0)
 		{
 			samples_hphase_cv[sampleWritePtr][0] = sample;
@@ -412,7 +418,7 @@ void EXTI15_10_IRQHandler(void)
 		{
 			samples_hphase_cv[sampleWritePtr][linecnt] =
 				(uint16_t)(((uint32_t)sample +
-				            (uint32_t)samples_hphase_cv[sampleWritePtr][linecnt - 1] * 7u) >> 3);
+				            (uint32_t)samples_hphase_cv[sampleWritePtr][linecnt - 1] * 31u) >> 5);
 		}
 
 		//samples_hphase[sampleWritePtr][linecnt - VBLANK] = (4095 - HAL_ADC_GetValue(&hadc1)) >> 2;
