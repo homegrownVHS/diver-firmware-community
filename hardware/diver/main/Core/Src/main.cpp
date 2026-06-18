@@ -1113,7 +1113,7 @@ void data_transmitted_handler(DMA_HandleTypeDef *hdma)
 	{
 		hwave[waveReadPtr][prev_sentinel_idx] = hwave[waveReadPtr][prev_sentinel_idx - hres];
 	}
-	uint32_t dma_off     = hphase_cv[waveReadPtr][linecnt] % hres;
+	uint32_t dma_off     = (hphase_cv[waveReadPtr][linecnt] % hres) & ~3u; // snap to 4px grid to kill ADC jitter
 	uint32_t sentinel_idx = dma_off + hres + HBLANK;
 	hwave[waveReadPtr][sentinel_idx] = vwave[waveReadPtr][linecnt] | 0b10000000000;
 	prev_sentinel_idx = sentinel_idx;
