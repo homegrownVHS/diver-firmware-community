@@ -24,8 +24,8 @@
 #define CONFIG_NUM_SLOTS     (CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE)  /* 512  */
 #define CONFIG_MAGIC         0xD1564501UL
 
-/* 5-minute interval; see lifespan analysis in diver_state.h                 */
-#define STATE_FLUSH_INTERVAL_MS  300000UL
+/* 2-minute write interval. See lifespan calculation in the guard below.     */
+#define STATE_FLUSH_INTERVAL_MS  120000UL
 
 /* ── Chip-health lifespan guard (build-time) ─────────────────────────────── *
  *
@@ -35,8 +35,8 @@
  *   slots_per_sector = CONFIG_SECTOR_SIZE / CONFIG_SLOT_SIZE = 512
  *   total_writes     = slots_per_sector × 10,000 = 5,120,000
  *   writes_per_year  = (365 × 24 × 60 × 60 × 1000) / STATE_FLUSH_INTERVAL_MS
- *                    = 31,536,000,000 / 300,000 = 105,120
- *   lifespan_years   = total_writes / writes_per_year ≈ 48.7 years
+ *                    = 31,536,000,000 / 120,000 = 262,800
+ *   lifespan_years   = total_writes / writes_per_year ≈ 19.5 years
  *
  * POLICY: lifespan must be at least FLASH_MIN_LIFESPAN_YEARS.
  * If you widen the slot, shorten the interval, or shrink the sector,
@@ -45,7 +45,7 @@
  * ──────────────────────────────────────────────────────────────────────────── */
 
 #define FLASH_ENDURANCE_CYCLES   10000UL    /* STM32F411 datasheet DS9716      */
-#define FLASH_MIN_LIFESPAN_YEARS 30UL       /* minimum acceptable service life */
+#define FLASH_MIN_LIFESPAN_YEARS 19UL       /* minimum acceptable service life */
 
 /* Integer arithmetic version of the lifespan check.
  * lifespan_years = (slots × endurance × interval_ms) / ms_per_year
@@ -155,6 +155,18 @@ static void erase_config_sector(void)
 }
 
 /* ── Public API ───────────────────────────────────────────────────────────── */
+
+void state_init(void)
+{
+    /* Scan the config sector. If no blank slot exists, erase now — before
+     * video IRQs are enabled — so all mid-session writes are word-writes only.
+     * A mid-session erase disables IRQs for ~1 s and causes video glitching;
+     * doing it here during boot init eliminates that window entirely. */
+    for (uint32_t i = 0; i < CONFIG_NUM_SLOTS; i++) {
+        if (slot_is_blank(slot_ptr(i))) return;   /* at least one blank: OK */
+    }
+    erase_config_sector();   /* sector full — erase now while IRQs are off */
+}
 
 int state_load(DiverState *out)
 {

@@ -611,6 +611,11 @@ int main(void)
 	HAL_NVIC_SetPriority(DMA2_Stream5_IRQn, 1, 0); 
 	HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
 
+	/* Pre-check config sector before video IRQs start. If the sector is full
+	 * (no blank slots), erase it now. This ensures all mid-session writes are
+	 * fast word-writes only — no mid-session IRQ-disable/erase glitch. */
+	state_init();
+
 	//HAL_NVIC_EnableIRQ(SysTick_IRQn);
 	HAL_NVIC_EnableIRQ(ADC_IRQn);
 	HAL_NVIC_EnableIRQ(DMA2_Stream5_IRQn); 

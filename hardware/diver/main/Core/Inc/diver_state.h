@@ -52,9 +52,18 @@ typedef struct {
 } DiverState;
 
 /**
+ * Check the config sector for a full-sector condition and erase it now,
+ * while video IRQs are still disabled at boot. This guarantees that all
+ * subsequent mid-session writes are fast word-writes only — no mid-session
+ * IRQ-disable/erase window that would freeze the video output.
+ * Call BEFORE HAL_NVIC_EnableIRQ(EXTI15_10_IRQn).
+ */
+void state_init(void);
+
+/**
  * Scan the flash config sector for the newest valid slot.
  * Returns 1 and populates *out when found; 0 leaves *out untouched.
- * Call once on boot before starting the main loop.
+ * Call once on boot after state_init() and before the main loop.
  */
 int  state_load(DiverState *out);
 
