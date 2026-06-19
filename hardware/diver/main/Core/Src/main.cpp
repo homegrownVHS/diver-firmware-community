@@ -1000,8 +1000,8 @@ int main(void)
 				}
 				switch (selected_bank)
 				{
-				case 6:		
-				case 7:	 sample = samples_wave[sampleReadPtr][sample_index]; break;	
+				case 6:
+				case 7:	 sample = samples_wave[sampleReadPtr][sample_index]; break;
 				default: sample = sampleplusramp & 1023; break;
 				}				
 				vwave[waveWritePtr][i] = sample;
@@ -1078,7 +1078,7 @@ int main(void)
 						samples_deinterlaced[i] = hwave[waveWritePtr][(i >> 1)];
 					}
 				}
-				
+
 				for (uint32_t i = 0; i < hres; i++)
 				{
 					hwave[waveWritePtr][i] = samples_deinterlaced[i];
@@ -1178,8 +1178,26 @@ void data_transmitted_handler(DMA_HandleTypeDef *hdma)
 	hwave[waveReadPtr][sentinel_idx] = vwave[waveReadPtr][linecnt] | 0b10000000000;
 	prev_sentinel_idx = sentinel_idx;
 	prev_sentinel_buf = waveReadPtr;
-	HAL_DMA_Start_IT(htim1.hdma[TIM_DMA_ID_UPDATE], (uint32_t)&hwave[waveReadPtr][dma_off], (uint32_t)&GPIOC->ODR, hres + HBLANK + 3);
-
+	/* Direct DMA restart, bypassing HAL_DMA_Start_IT — addresses Lars's
+	 * diagnosis of timing contention causing left-side line artifacts.
+	 *
+	 * HAL_DMA_Start_IT does ~50-100 cycles of state-machine bookkeeping.
+	 * This handler runs at the end of each scan line during horizontal
+	 * blanking; if it doesn't finish before the next HSYNC fires, the
+	 * next line's DMA setup races with HSYNC and the first ~30 pixels of
+	 * that line can land on the wrong DAC values.  Direct register writes
+	 * shrink the restart to a handful of cycles.
+	 *
+	 * IMPORTANT: HAL_DMA_IRQHandler clears DMA_IT_TC in CR before invoking
+	 * this callback (stm32f4xx_hal_dma.c:905, NORMAL-mode path).  If we
+	 * don't re-enable it the next transfer completes silently and the
+	 * pipeline stalls (black screen).  So we re-set the IT enable bits
+	 * together with EN. */
+	DMA2->HIFCR = DMA_HIFCR_CTCIF5 | DMA_HIFCR_CHTIF5 | DMA_HIFCR_CTEIF5
+	            | DMA_HIFCR_CDMEIF5 | DMA_HIFCR_CFEIF5;
+	DMA2_Stream5->M0AR = (uint32_t)&hwave[waveReadPtr][dma_off];
+	DMA2_Stream5->NDTR = (uint32_t)(hres + HBLANK + 3);
+	DMA2_Stream5->CR  |= DMA_IT_TC | DMA_IT_TE | DMA_IT_DME | DMA_SxCR_EN;
 }
 
 extern "C"
@@ -1967,6 +1985,14 @@ void Display_Refresh()
 void TVP5150AM1_Setup(void)
 {
 	uint8_t decoder_address = 0xBA;       //I2CSEL = HIGH
+	/* Force VCR mode (Op Mode Controls reg 02h, bits 5:4 = 10).
+	 * Default is auto-detect: the chip switches between TV and VCR modes
+	 * based on perceived sync quality, and every switch causes a momentary
+	 * lock glitch in the output sync.  Forcing VCR mode eliminates the
+	 * switching glitch and uses the more sync-tolerant lock loop full-time.
+	 * Trade-off (comb filter off, chroma trap on) is irrelevant here — we
+	 * use the chip only as a sync extractor, YCbCr output is high-Z. */
+	I2C_WriteRegister(decoder_address, 0x02, 0b00100000);       // Force VCR mode for sync stability
 	I2C_WriteRegister(decoder_address, 0x03, 0b00000101);       // Enable sync outputs
 	I2C_WriteRegister(decoder_address, 0x0F, 0b00000000);       // Enable FID output/Disable GLCO output
 }
