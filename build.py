@@ -91,13 +91,24 @@ def main():
     padded_path = BUILD / "diver_firmware_padded.bin"
     padded_path.write_bytes(padded)
 
-    sha = hashlib.sha256(padded).hexdigest()
+    # Generate DfuSe .dfu wrapper (laypeople-friendly drag-and-drop format
+    # accepted by dfu-util without --dfuse-address).
+    dfu_path = BUILD / "diver_firmware.dfu"
+    dfuse_pack = PIO / "tool-dfuutil" / "dfuse-pack.py"
+    run(["python", str(dfuse_pack),
+         "-b", "0x08000000:" + str(bin_out),
+         str(dfu_path)])
+
+    sha_raw     = hashlib.sha256(raw).hexdigest()
+    sha_padded  = hashlib.sha256(padded).hexdigest()
+    sha_dfu     = hashlib.sha256(dfu_path.read_bytes()).hexdigest()
+
     print()
     run([SIZE, str(elf)])
     print()
-    print(f"raw bin:     {len(raw):>6} bytes")
-    print(f"padded bin:  {len(padded):>6} bytes  ({padded_path})")
-    print(f"sha-256:     {sha}")
+    print(f"raw bin:     {len(raw):>6} bytes  sha256={sha_raw}")
+    print(f"padded bin:  {len(padded):>6} bytes  sha256={sha_padded}")
+    print(f"dfu file:    {dfu_path.stat().st_size:>6} bytes  sha256={sha_dfu}")
 
 if __name__ == "__main__":
     main()
