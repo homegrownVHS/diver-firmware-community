@@ -105,13 +105,22 @@ You should see progress like:
 Opening DFU capable USB device...
 Device ID 0483:df11
 ...
-Erase    [=========================] 100%
-Download [=========================] 100%
-File downloaded successfully
+Parsing DFU image 1
+Target name: ST...
+Image for alternate setting 0, (1 elements, total size = ...)
+Parsing element 1, address = 0x08000000, size = ...
+Erase    [=========================] 100%        ... bytes
+Erase    done.
+Download [=========================] 100%        ... bytes
+Download done.
+Done parsing DfuSe file
 ```
 
-If you see `File downloaded successfully`, **unplug and replug the
-Diver**. It will boot the new firmware.
+When you see `Done parsing DfuSe file`, the flash itself is complete.
+The chip is still sitting in its bootloader at this point — **you must
+unplug the Diver's USB and power cycle the module** so it boots the new
+firmware from flash. After power cycle, the module is running the new
+firmware.
 
 ## Step 5 — Verify (optional)
 
