@@ -288,12 +288,12 @@ void EXTI15_10_IRQHandler(void)
 		{
 			if (captureEnable)
 			{
-				sampleReadPtr = sampleWritePtr;	
-				sampleWritePtr = (sampleWritePtr + 1) % 4;						
+				sampleReadPtr = sampleWritePtr;
+				sampleWritePtr = (sampleWritePtr + 1) % 4;
 			}
-				
-			waveReadPtr = waveWritePtr;	
-			waveWritePtr = (waveWritePtr + 1) % 4;	
+
+			waveReadPtr = waveWritePtr;
+			waveWritePtr = (waveWritePtr + 1) % 4;
 			waveRenderComplete = 0;
 		}
 		else
@@ -359,17 +359,19 @@ void EXTI15_10_IRQHandler(void)
 		sConfig.Rank = 2;
 		HAL_ADC_ConfigChannel(&hadc1, &sConfig);
 
-		/* H-phase CV oversample: 8-sample arithmetic mean.
-		 * Replaces the prior 3-sample IIR-weighted average; flat weighting
-		 * gives ~9 dB better rejection of high-frequency PSU/ADC noise. */
+		/* H-phase CV oversample: 3-sample arithmetic mean.
+		 * Restored from the previous 8-sample version: 8 ADC polls within
+		 * the EXTI ISR was ~15 µs of work during DMA-active period and
+		 * caused CPU/SRAM contention with the pixel-output DMA, producing
+		 * visible timing artifacts on the LEFT side of each video line. */
 		{
 			uint32_t accum = 0;
-			for (int _i = 0; _i < 8; ++_i) {
+			for (int _i = 0; _i < 3; ++_i) {
 				HAL_ADC_Start(&hadc1);
 				HAL_ADC_PollForConversion(&hadc1, 1);
 				accum += (uint32_t)(4095 - HAL_ADC_GetValue(&hadc1));
 			}
-			sample = (uint16_t)(accum >> 3);
+			sample = (uint16_t)(accum / 3u);
 		}
 		/*if (sample >= 4095 + 0 - 2048)
 		{
