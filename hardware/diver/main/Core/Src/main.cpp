@@ -1985,6 +1985,16 @@ void Display_Refresh()
 void TVP5150AM1_Setup(void)
 {
 	uint8_t decoder_address = 0xBA;       //I2CSEL = HIGH
+	/* Start the on-die ROM v4.00 microprocessor per TI SLEA093 §1.2
+	 * ("Start the TVP5150AM1 without the patch code").  TI's documented
+	 * bring-up issues a write of 0x00 to reg 0x7F to (re)start the internal
+	 * microprocessor.  Earlier firmware relied on the power-up default and
+	 * never issued this restart; doing it explicitly matches TI's sequence
+	 * and gives the sync-lock loop a deterministic start (candidate fix for
+	 * issue #6 startup-freeze race).  The restart re-runs ROM init, so it
+	 * must precede the register config below — settle briefly afterward. */
+	I2C_WriteRegister(decoder_address, 0x7F, 0x00);             // restart internal uP (SLEA093 §1.2)
+	HAL_Delay(10);
 	/* Force VCR mode (Op Mode Controls reg 02h, bits 5:4 = 10).
 	 * Default is auto-detect: the chip switches between TV and VCR modes
 	 * based on perceived sync quality, and every switch causes a momentary
